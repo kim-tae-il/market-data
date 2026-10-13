@@ -1,0 +1,25 @@
+on:
+schedule:
+- cron: '*/10 * * * *'
+workflow_dispatch:
+
+jobs:
+update-data:
+runs-on: ubuntu-latest
+permissions:
+contents: write
+steps:
+- uses: actions/checkout@v4
+- name: Use Node.js
+uses: actions/setup-node@v4
+with:
+node-version: '20'
+- name: Run script
+run: node collect.mjs
+- name: Commit and push if changed
+run: |
+git config --global user.name "github-actions[bot]"
+git config --global user.email "github-actions[bot]@users.noreply.github.net"
+git add market.json
+git commit -m "Auto update market data" || exit 0
+git push
