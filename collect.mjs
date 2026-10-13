@@ -93,6 +93,36 @@ async function krQuote(h) {
   throw err;
 }
 
+
+// ---- 순자산 계산 (페이지의 renderSummary와 같은 방식) → 하루 1개씩 기록 ----
+function netWorth(pf, qo) {
+  const num = x => parseFloat(x) || 0;
+  const rows = (pf.fx || []).filter(f => num(f.krw) > 0 && num(f.usd) > 0);
+  let fxKrw = 0, usdTot = 0;
+  rows.forEach(f => { fxKrw += num(f.krw); usdTot += num(f.usd); });
+  const avg = usdTot ? fxKrw / usdTot : 0;
+  const rate = qo.fx > 0 ? qo.fx : avg;
+  let stCost = 0, stVal = 0;
+  (pf.holdings || []).forEach(h => {
+    const c = num(h.avg) * num(h.qty); stCost += c;
+    const q = qo.us[String(h.ticker || '').trim().toUpperCase()];
+    stVal += q && q.price > 0 ? q.price * num(h.qty) : c;
+  });
+  let gG = 0, gK = 0;
+  (pf.gold || []).forEach(r => { gG += num(r.grams); gK += num(r.krw); });
+  const gVal = qo.goldPerG > 0 ? gG * qo.goldPerG : gK;
+  let krCost = 0, krVal = 0;
+  (pf.kr || []).forEach(h => {
+    const c = num(h.avg) * num(h.qty); krCost += c;
+    const q = qo.kr[String(h.ticker || h.name || '').trim()];
+    krVal += q && q.price > 0 ? q.price * num(h.qty) : c;
+  });
+  const cash = usdTot - stCost;
+  const P = (usdTot > 0 ? cash * avg : 0) + gK + stCost * avg + krCost;
+  const V = (usdTot > 0 ? cash * rate : 0) + gVal + stVal * rate + krVal;
+  return { p: Math.round(P), v: Math.round(V) };
+}
+
 const nf = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 const pctOf = q => (q && q.prev ? Math.round(((q.price - q.prev) / q.prev) * 10000) / 100 : null);
 
@@ -195,7 +225,21 @@ async function main() {
     for (const i of prevData?.items || []) if (i.mine) items.push({ ...i, stale: true });
   }
 
-  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, errors };
+  // 기록(history): 하루 1개 (그날 마지막 값으로 덮어씀), 최대 800일
+  let history = Array.isArray(prevData?.history) ? prevData.history.slice() : [];
+  if (pf) {
+    try {
+      const nw = netWorth(pf, quotesOut);
+      if (nw.p > 0) {
+        const d = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 한국 날짜
+        const pt = { d, v: nw.v, p: nw.p };
+        if (history.length && history[history.length - 1].d === d) history[history.length - 1] = pt; else history.push(pt);
+        history = history.slice(-800);
+      }
+    } catch (e) { errors.history = String(e.message || e); }
+  }
+
+  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, history, errors };
   writeFileSync(process.env.OUT_FILE || 'market.json', JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
 
