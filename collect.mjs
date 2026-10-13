@@ -53,6 +53,46 @@ async function fxFallback() {
   return { price: krw, prev: null, time: null };
 }
 
+
+// ---- 내 포트폴리오(Firestore, 공개 읽기)에서 보유 종목 읽기 ----
+const PROJECT = process.env.FIREBASE_PROJECT || 'dj-portfolio-f5e77';
+function fsVal(v) {
+  if (!v || typeof v !== 'object') return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return Number(v.doubleValue);
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fsVal);
+  if ('mapValue' in v) return Object.fromEntries(Object.entries(v.mapValue.fields || {}).map(([k, x]) => [k, fsVal(x)]));
+  return null;
+}
+async function loadPortfolio() {
+  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/portfolio/data`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Firestore HTTP ' + res.status);
+  const j = await res.json();
+  return Object.fromEntries(Object.entries(j.fields || {}).map(([k, x]) => [k, fsVal(x)]));
+}
+// 한국 종목: 6자리 코드면 .KS/.KQ 순서로 시도, 코드가 없거나 이상하면 종목명으로 Yahoo 검색
+async function krQuote(h) {
+  const code = String(h.ticker || '').trim();
+  const cands = [];
+  if (/^[0-9A-Za-z]{6}$/.test(code)) cands.push(code.toUpperCase() + '.KS', code.toUpperCase() + '.KQ');
+  else if (/\.(KS|KQ)$/i.test(code)) cands.push(code.toUpperCase());
+  else {
+    try {
+      const r = await fetch('https://query2.finance.yahoo.com/v1/finance/search?lang=ko-KR&region=KR&quotesCount=8&newsCount=0&q=' + encodeURIComponent(code || h.name), { headers: { 'User-Agent': UA[0] } });
+      const j = await r.json();
+      for (const q of j.quotes || []) if (/\.(KS|KQ)$/.test(q.symbol || '')) cands.push(q.symbol);
+    } catch (_) {}
+  }
+  let err = new Error('종목을 찾지 못함');
+  for (const sym of cands.slice(0, 3)) {
+    try { return { ...(await yahoo(sym)), symbol: sym }; } catch (e) { err = e; }
+  }
+  throw err;
+}
+
 const nf = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 const pctOf = q => (q && q.prev ? Math.round(((q.price - q.prev) / q.prev) * 10000) / 100 : null);
 
@@ -111,7 +151,51 @@ async function main() {
   push('nasdaq', '나스닥',   q => ({ value: nf(q.price, 2), unit: '', pct: pctOf(q) }));
   push('spx',    'S&P 500', q => ({ value: nf(q.price, 2), unit: '', pct: pctOf(q) }));
 
-  const out = { updated: new Date().toISOString(), items, errors };
+
+  // ---- 내 포트폴리오 종목 시세 (전광판 + 페이지 자동 반영) ----
+  const prevQ = prevData?.quotes || { us: {}, kr: {} };
+  const quotesOut = { fx: quotes.usdkrw ? quotes.usdkrw.price : (prevQ.fx ?? null), goldPerG: null, us: {}, kr: {} };
+  if (quotes.gold && quotes.usdkrw) quotesOut.goldPerG = Math.round(quotes.gold.price * quotes.usdkrw.price / 31.1034768);
+  else quotesOut.goldPerG = prevQ.goldPerG ?? null;
+  let pf = null;
+  try { pf = await loadPortfolio(); } catch (e) { errors.portfolio = String(e.message || e); }
+  if (pf) {
+    const seen = new Set();
+    for (const h of pf.holdings || []) {
+      const t = String(h.ticker || '').trim().toUpperCase();
+      if (!t || seen.has('u' + t)) continue; seen.add('u' + t);
+      try {
+        const q = await yahoo(t);
+        quotesOut.us[t] = { price: q.price, pct: pctOf(q) };
+        items.push({ key: 'us:' + t, label: h.name || t, value: '$' + nf(q.price, 2), unit: '', pct: pctOf(q), stale: false, mine: true });
+      } catch (e) {
+        errors['us:' + t] = String(e.message || e);
+        if (prevQ.us?.[t]) quotesOut.us[t] = prevQ.us[t];
+        const old = prevItem('us:' + t); if (old) items.push({ ...old, stale: true });
+      }
+      await sleep(300);
+    }
+    for (const h of pf.kr || []) {
+      const k = String(h.ticker || h.name || '').trim();
+      if (!k || seen.has('k' + k)) continue; seen.add('k' + k);
+      try {
+        const q = await krQuote(h);
+        quotesOut.kr[k] = { price: q.price, pct: pctOf(q), symbol: q.symbol };
+        items.push({ key: 'kr:' + k, label: h.name || k, value: nf(Math.round(q.price), 0), unit: '원', pct: pctOf(q), stale: false, mine: true });
+      } catch (e) {
+        errors['kr:' + k] = String(e.message || e);
+        if (prevQ.kr?.[k]) quotesOut.kr[k] = prevQ.kr[k];
+        const old = prevItem('kr:' + k); if (old) items.push({ ...old, stale: true });
+      }
+      await sleep(300);
+    }
+  } else {
+    // 포트폴리오를 못 읽으면 이전 값 유지
+    quotesOut.us = prevQ.us || {}; quotesOut.kr = prevQ.kr || {};
+    for (const i of prevData?.items || []) if (i.mine) items.push({ ...i, stale: true });
+  }
+
+  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, errors };
   writeFileSync(process.env.OUT_FILE || 'market.json', JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
 
@@ -119,4 +203,3 @@ async function main() {
   if (items.length === 0) { console.error('시세를 하나도 가져오지 못했어요.'); process.exit(1); }
 }
 main();
-
