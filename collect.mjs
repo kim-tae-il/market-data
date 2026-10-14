@@ -226,7 +226,10 @@ async function main() {
   }
 
   // 기록(history): 하루 1개 (그날 마지막 값으로 덮어씀), 최대 800일
-  let history = Array.isArray(prevData?.history) ? prevData.history.slice() : [];
+  // 일별 기록은 history.json 에 따로 저장하고 개수 제한 없이 계속 쌓아요 (20년이어도 약 300KB)
+  let prevHist = null;
+  try { const hf = process.env.PREV_HIST_FILE; if (hf && existsSync(hf)) prevHist = JSON.parse(readFileSync(hf, 'utf8')); } catch (_) {}
+  let history = Array.isArray(prevHist?.history) ? prevHist.history.slice() : (Array.isArray(prevData?.history) ? prevData.history.slice() : []);
   // 최근 48시간은 10분 간격으로 따로 기록 (일 그래프용)
   let intraday = (Array.isArray(prevData?.intraday) ? prevData.intraday : []).filter(x => Date.now() - x.t < 48 * 3600e3);
   if (pf) {
@@ -236,14 +239,15 @@ async function main() {
         const d = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 한국 날짜
         const pt = { d, v: nw.v, p: nw.p };
         if (history.length && history[history.length - 1].d === d) history[history.length - 1] = pt; else history.push(pt);
-        history = history.slice(-800);
         intraday.push({ t: Date.now(), v: nw.v });
       }
     } catch (e) { errors.history = String(e.message || e); }
   }
 
-  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, history, intraday, errors };
+  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, intraday, errors };
   writeFileSync(process.env.OUT_FILE || 'market.json', JSON.stringify(out, null, 2));
+  // 기록 파일: 이번 실행에서 포트폴리오를 읽지 못했어도 기존 기록은 그대로 다시 써서 지워지지 않게 해요
+  if (history.length || prevHist) writeFileSync(process.env.HIST_OUT_FILE || 'history.json', JSON.stringify({ history }));
   console.log(JSON.stringify(out, null, 2));
 
   // 하나도 못 가져왔고 이전 값도 없으면 실패로 표시 (Actions 탭에서 빨간 불로 알 수 있게)
