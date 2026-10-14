@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: market-data
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   update:
@@ -23,22 +23,32 @@ jobs:
         with:
           node-version: 20
 
-      - name: 이전 데이터 받아오기 (실패해도 무시)
-        run: curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/market-data/market.json" -o prev.json || true
+      - name: 이전 데이터 받아오기
+        run: |
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/market-data"
+          curl -fsSL "$BASE/market.json" -o prev.json || true
+          # 기록(history.json)은 절대 잃어버리면 안 돼요: 처음(404)이면 새로 시작, 그 외 오류면 이번 실행을 중단해요
+          code=$(curl -sS -o prev_history.json -w "%{http_code}" "$BASE/history.json" || echo 000)
+          if [ "$code" = "200" ]; then echo "기록 파일 확인"; 
+          elif [ "$code" = "404" ]; then rm -f prev_history.json; echo "기록 파일 없음 (처음 시작)";
+          else echo "기록 파일을 받지 못했어요 (HTTP $code) - 기록 보호를 위해 이번 실행은 건너뛰어요"; exit 1; fi
 
       - name: 시세 수집
         env:
           PREV_FILE: prev.json
+          PREV_HIST_FILE: prev_history.json
           OUT_FILE: market.json
+          HIST_OUT_FILE: history.json
         run: node collect.mjs
 
-      - name: market-data 브랜치로 게시 (기록은 1개만 유지)
+      - name: market-data 브랜치로 게시 (최신 상태 1개만 유지)
         run: |
           mkdir -p /tmp/out && cp market.json /tmp/out/market.json
+          [ -f history.json ] && cp history.json /tmp/out/history.json || true
           cd /tmp/out
           git init -q -b market-data
           git config user.name "market-bot"
           git config user.email "market-bot@users.noreply.github.com"
-          git add market.json
+          git add .
           git commit -q -m "update $(date -u +%FT%TZ)"
           git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" market-data
