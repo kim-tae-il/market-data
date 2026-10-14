@@ -227,6 +227,8 @@ async function main() {
 
   // 기록(history): 하루 1개 (그날 마지막 값으로 덮어씀), 최대 800일
   let history = Array.isArray(prevData?.history) ? prevData.history.slice() : [];
+  // 최근 48시간은 10분 간격으로 따로 기록 (일 그래프용)
+  let intraday = (Array.isArray(prevData?.intraday) ? prevData.intraday : []).filter(x => Date.now() - x.t < 48 * 3600e3);
   if (pf) {
     try {
       const nw = netWorth(pf, quotesOut);
@@ -235,11 +237,12 @@ async function main() {
         const pt = { d, v: nw.v, p: nw.p };
         if (history.length && history[history.length - 1].d === d) history[history.length - 1] = pt; else history.push(pt);
         history = history.slice(-800);
+        intraday.push({ t: Date.now(), v: nw.v });
       }
     } catch (e) { errors.history = String(e.message || e); }
   }
 
-  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, history, errors };
+  const out = { updated: new Date().toISOString(), items, quotes: quotesOut, history, intraday, errors };
   writeFileSync(process.env.OUT_FILE || 'market.json', JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
 
