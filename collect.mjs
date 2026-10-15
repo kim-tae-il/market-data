@@ -150,7 +150,8 @@ function netWorth(pf, qo) {
     stVal += q && q.price > 0 ? q.price * num(h.qty) : c;
   });
   let gG = 0, gK = 0;
-  (pf.gold || []).forEach(r => { gG += num(r.grams); gK += num(r.krw); });
+  // 매입금액이 없는 금(선물)은 현재 평가액을 기준가로 계산 (손익 0)
+  (pf.gold || []).forEach(r => { const x = num(r.grams); gG += x; gK += num(r.krw) > 0 ? num(r.krw) : (qo.goldPerG > 0 ? x * qo.goldPerG : 0); });
   const gVal = qo.goldPerG > 0 ? gG * qo.goldPerG : gK;
   let krCost = 0, krVal = 0;
   (pf.kr || []).forEach(h => {
