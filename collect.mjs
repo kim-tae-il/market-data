@@ -114,6 +114,22 @@ async function fsSetJson(path, obj, extra = {}) {
   if (!res.ok) throw new Error(`Firestore 쓰기 ${path} HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
 }
 async function loadPortfolio() { return fsGet('portfolio/data'); }
+// 가입자 목록: users/{uid}/pf/data 문서만 모아서 가져와요 (컬렉션 그룹 쿼리, 보유 정보 필드만)
+async function listUsers(limit = 300) {
+  const res = await fetch(`${DOCS}:runQuery`, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'pf', allDescendants: true }], limit } }),
+  });
+  if (!res.ok) throw new Error('가입자 목록 HTTP ' + res.status + ' ' + (await res.text()).slice(0, 160));
+  const rows = await res.json();
+  const out = [];
+  for (const r of rows) {
+    const d = r.document; if (!d) continue;
+    const m = /\/users\/([^/]+)\/pf\/data$/.exec(d.name || ''); if (!m) continue;
+    out.push({ uid: m[1], pf: Object.fromEntries(Object.entries(d.fields || {}).map(([k, x]) => [k, fsVal(x)])) });
+  }
+  return out;
+}
 // 한국 종목: 6자리 코드면 .KS/.KQ 순서로 시도, 코드가 없거나 이상하면 종목명으로 Yahoo 검색
 async function krQuote(h) {
   const code = String(h.ticker || '').trim();
@@ -181,16 +197,14 @@ async function main() {
   const errors = {};
 
   // 비공개 저장소 연결 (가족 데이터)
-  let priv = false, prevLive = null, pf = null, histDoc = null, histOk = false;
+  let priv = false, pf = null;
   try { priv = await fsAuth(); } catch (e) { errors.auth = String(e.message || e); }
   if (priv) {
     try { pf = await loadPortfolio(); } catch (e) { errors.portfolio = String(e.message || e); }
-    try { const d = await fsGet('portfolio/live'); prevLive = d && d.json ? JSON.parse(d.json) : null; } catch (e) { errors.live = String(e.message || e); }
-    try { histDoc = await fsGet('portfolio/history'); histOk = true; } catch (e) { errors.historyRead = String(e.message || e); }
   } else if (!errors.auth) {
     console.log('FIREBASE_SERVICE_ACCOUNT 비밀값이 없어서 공개 시세만 만들어요.');
   }
-  const prevItem = key => prevData?.items?.find(i => i.key === key) || prevLive?.items?.find(i => i.key === key) || null;
+  const prevItem = key => prevData?.items?.find(i => i.key === key) || null;   // 공개 시세 전용 (개인 항목은 섞지 않아요)
 
   const quotes = {};
   for (const [key, sym] of Object.entries(SYMBOLS)) {
@@ -237,7 +251,6 @@ async function main() {
 
   // ---- 종목 시세 조회 (같은 종목은 한 번만) ----
   const prevQP = prevData?.quotes || { us: {}, kr: {} };
-  const prevQL = prevLive?.quotes || { us: {}, kr: {} };
   const usC = new Map(), krC = new Map();
   const getUS = async t => {
     if (!usC.has(t)) { try { usC.set(t, await yahoo(t)); } catch (e) { usC.set(t, { err: String(e.message || e) }); } await sleep(300); }
@@ -250,7 +263,7 @@ async function main() {
   const fxPrice = quotes.usdkrw ? quotes.usdkrw.price : null;
   const goldPerG = (quotes.gold && quotes.usdkrw) ? Math.round(quotes.gold.price * quotes.usdkrw.price / 31.1034768) : null;
   // 한 묶음(공개용 샘플 / 비공개 내 종목)을 만들어요
-  const build = async (usList, krList, prevQ, label) => {
+  const build = async (usList, krList, prevQ, label, prevItemFn = prevItem) => {
     const o = { fx: fxPrice ?? (prevQ.fx ?? null), goldPerG: goldPerG ?? (prevQ.goldPerG ?? null), us: {}, kr: {} };
     const its = [];
     const seen = new Set();
@@ -263,7 +276,7 @@ async function main() {
       } else {
         errors[label + 'us:' + t] = q.err;
         if (prevQ.us?.[t]) o.us[t] = prevQ.us[t];
-        const old = prevItem('us:' + t); if (old) its.push({ ...old, stale: true });
+        const old = prevItemFn('us:' + t); if (old) its.push({ ...old, stale: true });
       }
     }
     for (const [k, name, h] of krList) {
@@ -275,7 +288,7 @@ async function main() {
       } else {
         errors[label + 'kr:' + k] = q.err;
         if (prevQ.kr?.[k]) o.kr[k] = prevQ.kr[k];
-        const old = prevItem('kr:' + k); if (old) its.push({ ...old, stale: true });
+        const old = prevItemFn('kr:' + k); if (old) its.push({ ...old, stale: true });
       }
     }
     return { q: o, items: its };
@@ -284,34 +297,54 @@ async function main() {
   // 1) 공개 market.json: 시장 시세 + 샘플 종목만 (개인 정보 없음)
   const pub = await build(DEMO_US, DEMO_KR.map(([c, n]) => [c, n, { ticker: c, name: n }]), prevQP, 'demo:');
   const pubOut = { updated: new Date().toISOString(), items: [...baseItems, ...pub.items], quotes: pub.q, errors: {} };
-  for (const k of Object.keys(errors)) if (!/^(auth|portfolio|live|historyRead|history|private)/.test(k)) pubOut.errors[k] = errors[k];
+  for (const k of Object.keys(errors)) if (!/^(auth|portfolio|live|users|timeout|hist|private|u:|family)/.test(k) && !/^(u:|family:)/.test(k)) pubOut.errors[k] = errors[k];
   writeFileSync(process.env.OUT_FILE || 'market.json', JSON.stringify(pubOut, null, 2));
 
-  // 2) 비공개: 내 종목 시세 + 순자산 기록 → Firestore (가족만 읽기 가능)
-  if (priv && pf) {
+  // 2) 비공개: 사용자별 종목 시세 + 순자산 기록 → Firestore (본인/가족만 읽기 가능)
+  //    - 가족: portfolio/{data,live,history}   - 가입자: users/{uid}/pf/data → users/{uid}/aux/{live,history}
+  if (priv) {
+    const started = Date.now();
+    const forceHist = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' || new Date().getUTCMinutes() < 10;   // 기록은 한 시간에 한 번 저장 (쓰기 횟수 절약)
+    const subjects = [];
+    if (pf) subjects.push({ name: 'family', pf, live: 'portfolio/live', hist: 'portfolio/history' });
     try {
-      const mine = await build(
-        (pf.holdings || []).map(h => [String(h.ticker || '').trim().toUpperCase(), h.name]),
-        (pf.kr || []).map(h => [String(h.ticker || h.name || '').trim(), h.name, h]),
-        prevQL, '');
-      let history = [];
-      try { if (histDoc?.json) history = JSON.parse(histDoc.json).history || []; } catch (_) {}
-      let intraday = (Array.isArray(prevLive?.intraday) ? prevLive.intraday : []).filter(x => Date.now() - x.t < 48 * 3600e3);
-      const nw = netWorth(pf, mine.q);
-      let histWrite = histOk;                         // 기록을 못 읽었으면 덮어쓰지 않아요 (기록 보호)
-      if (nw.p > 0) {
-        const d = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 한국 날짜
-        const pt = { d, v: nw.v, p: nw.p };
-        if (history.length && history[history.length - 1].d === d) history[history.length - 1] = pt; else history.push(pt);
-        intraday.push({ t: Date.now(), v: nw.v });
-      }
-      const live = { updated: pubOut.updated, items: [...baseItems, ...mine.items], quotes: mine.q, intraday };
-      await fsSetJson('portfolio/live', live, { updated: live.updated });
-      if (histWrite && history.length) await fsSetJson('portfolio/history', { history });
-      else if (!histWrite) errors.history = '기록을 읽지 못해 이번에는 기록 저장을 건너뜀';
-    } catch (e) { errors.private = String(e.message || e); console.error('비공개 저장 실패:', errors.private); process.exitCode = 1; }
+      for (const u of await listUsers()) subjects.push({ name: 'u:' + u.uid.slice(0, 6), pf: u.pf, live: `users/${u.uid}/aux/live`, hist: `users/${u.uid}/aux/history` });
+    } catch (e) { errors.users = String(e.message || e); }
+    let done = 0, failed = 0;
+    for (const sub of subjects) {
+      if (Date.now() - started > 4.5 * 60e3) { errors.timeout = `시간 제한으로 ${subjects.length - done - failed}명은 다음 실행으로 넘겼어요`; break; }
+      try {
+        const p = sub.pf;
+        const clean = t => String(t || '').trim().slice(0, 24);
+        let prevL = null;
+        try { const d = await fsGet(sub.live); prevL = d && d.json ? JSON.parse(d.json) : null; } catch (_) {}
+        const mine = await build(
+          (p.holdings || []).slice(0, 60).map(h => [clean(h.ticker).toUpperCase(), String(h.name || '').slice(0, 40)]),
+          (p.kr || []).slice(0, 60).map(h => [clean(h.ticker || h.name), String(h.name || '').slice(0, 40), h]),
+          prevL?.quotes || { us: {}, kr: {} }, sub.name + ':', k => prevL?.items?.find(i => i.key === k) || null);
+        let intraday = (Array.isArray(prevL?.intraday) ? prevL.intraday : []).filter(x => Date.now() - x.t < 48 * 3600e3);
+        const nw = netWorth(p, mine.q);
+        if (nw.p > 0 || nw.v > 0) intraday.push({ t: Date.now(), v: nw.v });
+        const live = { updated: pubOut.updated, items: [...baseItems, ...mine.items], quotes: mine.q, intraday };
+        await fsSetJson(sub.live, live, { updated: live.updated });
+        if (forceHist && (nw.p > 0 || nw.v > 0)) {
+          let hd = null, ok = true;
+          try { hd = await fsGet(sub.hist); } catch (_) { ok = false; }     // 기록을 못 읽었으면 덮어쓰지 않아요 (기록 보호)
+          if (ok) {
+            let history = []; try { if (hd?.json) history = JSON.parse(hd.json).history || []; } catch (_) {}
+            const d = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 한국 날짜
+            const pt = { d, v: nw.v, p: nw.p };
+            if (history.length && history[history.length - 1].d === d) history[history.length - 1] = pt; else history.push(pt);
+            await fsSetJson(sub.hist, { history });
+          } else errors['hist:' + sub.name] = '기록을 읽지 못해 건너뜀';
+        }
+        done++;
+      } catch (e) { failed++; errors['private:' + sub.name] = String(e.message || e); console.error('저장 실패', sub.name, e.message || e); }
+    }
+    console.log(`비공개 저장: 성공 ${done} / 실패 ${failed} / 전체 ${subjects.length}`);
+    if (failed && !done) process.exitCode = 1;
   }
-  console.log(JSON.stringify({ ...pubOut, privateErrors: Object.fromEntries(Object.entries(errors).filter(([k]) => /^(auth|portfolio|live|historyRead|history|private)/.test(k))) }, null, 2));
+  console.log(JSON.stringify({ ...pubOut, privateErrors: Object.fromEntries(Object.entries(errors).filter(([k]) => /^(auth|portfolio|live|users|timeout|hist|private|u:|family)/.test(k))) }, null, 2));
   if (errors.auth || errors.portfolio) process.exitCode = 1;
 
   // 하나도 못 가져왔고 이전 값도 없으면 실패로 표시 (Actions 탭에서 빨간 불로 알 수 있게)
