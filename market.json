@@ -1,0 +1,130 @@
+{
+  "updated": "2026-11-07T15:13:39.657Z",
+  "items": [
+    {
+      "key": "usdkrw",
+      "label": "원/달러",
+      "value": "1,363.65",
+      "unit": "원",
+      "pct": 0.51,
+      "stale": false
+    },
+    {
+      "key": "gold",
+      "label": "금",
+      "value": "669,950",
+      "unit": "원/돈 (국제시세 환산)",
+      "sub": "$4,074.9/oz",
+      "pct": -0.94,
+      "stale": false
+    },
+    {
+      "key": "kospi",
+      "label": "코스피",
+      "value": "5,059.69",
+      "unit": "",
+      "pct": -6.02,
+      "stale": false
+    },
+    {
+      "key": "kosdaq",
+      "label": "코스닥",
+      "value": "644.27",
+      "unit": "",
+      "pct": -5.03,
+      "stale": false
+    },
+    {
+      "key": "nasdaq",
+      "label": "나스닥",
+      "value": "24,579.42",
+      "unit": "",
+      "pct": 1.09,
+      "stale": false
+    },
+    {
+      "key": "spx",
+      "label": "S&P 500",
+      "value": "7,376.86",
+      "unit": "",
+      "pct": 0.31,
+      "stale": false
+    },
+    {
+      "key": "us:AAPL",
+      "label": "애플",
+      "value": "$342.37",
+      "unit": "",
+      "pct": -0.52,
+      "stale": false,
+      "mine": true
+    },
+    {
+      "key": "us:NVDA",
+      "label": "엔비디아",
+      "value": "$186.64",
+      "unit": "",
+      "pct": 2.78,
+      "stale": false,
+      "mine": true
+    },
+    {
+      "key": "us:TSLA",
+      "label": "테슬라",
+      "value": "$358.22",
+      "unit": "",
+      "pct": 4.23,
+      "stale": false,
+      "mine": true
+    },
+    {
+      "key": "kr:005930",
+      "label": "삼성전자",
+      "value": "188,700",
+      "unit": "원",
+      "pct": -6.35,
+      "stale": false,
+      "mine": true
+    },
+    {
+      "key": "kr:000660",
+      "label": "SK하이닉스",
+      "value": "1,132,000",
+      "unit": "원",
+      "pct": -10.44,
+      "stale": false,
+      "mine": true
+    }
+  ],
+  "quotes": {
+    "fx": 1363.65,
+    "goldPerG": 178653,
+    "us": {
+      "AAPL": {
+        "price": 342.37,
+        "pct": -0.52
+      },
+      "NVDA": {
+        "price": 186.64,
+        "pct": 2.78
+      },
+      "TSLA": {
+        "price": 358.22,
+        "pct": 4.23
+      }
+    },
+    "kr": {
+      "005930": {
+        "price": 188700,
+        "pct": -6.35,
+        "symbol": "005930.KS"
+      },
+      "000660": {
+        "price": 1132000,
+        "pct": -10.44,
+        "symbol": "000660.KS"
+      }
+    }
+  },
+  "errors": {}
+}
